@@ -35,7 +35,18 @@ class TzWhere
 			if ($base_path === null) {
 				$base_path = __DIR__;
 			}
-			$tzWorldFile = realpath($base_path . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'polygons');
+			$dataDir = $base_path . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'data';
+			$tzWorldFile = $dataDir . DIRECTORY_SEPARATOR . 'polygons';
+			$tzWorldFileZip = $tzWorldFile . '.zip';
+
+			// Check for zipped version and unzip it
+			if (! realpath($tzWorldFile) && realpath($tzWorldFileZip)) {
+				$zip = new \ZipArchive;
+				if ($zip->open(realpath($tzWorldFile . '.zip')) === true) {
+					$zip->extractTo(realpath($dataDir));
+					$zip->close();
+				}
+			}
 		}
 
 		// TODO check for cache
