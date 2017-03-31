@@ -1,0 +1,41 @@
+{
+    "name": "ymkatz/php-tzwhere",
+    "description": "A port of mattbornski/tzwhere from JS to PHP",
+    "type": "library",
+    "authors": [
+        {
+            "name": "Moshe Katz",
+            "email": "kohenkatz@gmail.com"
+        }
+    ],
+    "license": "MIT",
+    "require": {
+        "php": ">=7.0.0",
+        "efele/tz_world": "2016.4.0",
+        "gasparesganga/php-shapefile": "^2.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "YMKatz\\TzWhere\\": "src/"
+        }
+    },
+    "repositories": [
+        {
+            "type":"package",
+            "package": {
+                "name": "efele/tz_world",
+                "version":"2016.4.0",
+                "dist": {
+                    "url": "http://efele.net/maps/tz/world/tz_world_mp.zip",
+                    "type": "zip"
+                }
+            }
+        }
+    ],
+    "require-dev": {
+        "phpunit/phpunit": "6.0"
+    },
+    "config": {
+        "secure-http": false
+    }
+}
