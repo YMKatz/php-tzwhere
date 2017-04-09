@@ -1,5 +1,9 @@
 <?php
 
+/**
+ * Parses the shapefile into a PHP object
+ */
+
 require realpath(__DIR__ . '/../vendor/autoload.php');
 
 ini_set('memory_limit', '-1');
