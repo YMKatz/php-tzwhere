@@ -22,12 +22,12 @@ class TzWhere
 	const EXCLUDE_REGIONS = [];
 
 
-	private $timezoneNamesToPolygons = [];
-	private $timezoneLongitudeShortcuts = [];
-	private $timezoneLatitudeShortcuts = [];
+	private $tzFilename = null;
+	private $timezoneNamesToPolygons = null;
 
-	// Don't forget to run this through `realpath`
-	private $constructedShortcutFilePathBase = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'tmp';
+	private $shortcutsFilename;
+	private $timezoneLongitudeShortcuts = null;
+	private $timezoneLatitudeShortcuts = null;
 
 	public function __construct($base_path = null, $tzWorldFile = null)
 	{
@@ -51,12 +51,54 @@ class TzWhere
 
 		// TODO check for cache
 
-		$this->timezoneNamesToPolygons = unserialize(file_get_contents($tzWorldFile));
-		$this->finishProcessing();
+		$this->tzFilename = $tzWorldFile;
+		$this->shortcutsFilename = $tzWorldFile . '-shortcuts';
 	}
 
-	protected function finishProcessing()
+	public function getTimezonePolygon($tzname, $polyindex)
 	{
+		$polygons = $this->getOrLoadTimezonePolygons(false);
+
+		return $polygons[$tzname][$polyindex];
+	}
+
+	public function getOrLoadTimezonePolygons($autobuild_shortcuts = true)
+	{
+		if ($this->timezoneNamesToPolygons === null) {
+			$this->timezoneNamesToPolygons = unserialize(file_get_contents($this->tzFilename));
+			// If the raw data is loaded, make sure the shortcuts are loaded too unless it would cause a loop
+			if ($autobuild_shortcuts) {
+				$this->loadOrBuildShortcuts();
+			}
+		}
+
+		return $this->timezoneNamesToPolygons;
+	}
+
+	protected function loadOrBuildShortcuts()
+	{
+		if (is_array($this->timezoneLatitudeShortcuts) && is_array($this->timezoneLongitudeShortcuts)) {
+			return;
+		}
+
+		try {
+			if (realpath($this->shortcutsFilename)) {
+				list($this->timezoneLatitudeShortcuts, $this->timezoneLongitudeShortcuts) =
+					unserialize(file_get_contents($this->shortcutsFilename));
+			}
+		} catch (\Exception $e) {
+			// If we couldn't load the data, rebuild it.
+			$this->buildShortcuts();
+		}
+	}
+
+	public function buildShortcuts()
+	{
+		$this->getOrLoadTimezonePolygons(false);
+
+		$this->timezoneLatitudeShortcuts = [];
+		$this->timezoneLongitudeShortcuts = [];
+
 		foreach ($this->timezoneNamesToPolygons as $tzname => $polygons) {
 			foreach ($polygons as $polyIndex => $poly) {
 				$minLng = floor($poly->getWest() / self::SHORTCUT_DEGREES_LONGITUDE) * self::SHORTCUT_DEGREES_LONGITUDE;
@@ -87,117 +129,14 @@ class TzWhere
 				}
 			}
 		}
+
+		return [$this->timezoneLatitudeShortcuts, $this->timezoneLongitudeShortcuts];
 	}
-
-	/*
-	protected function constructShortcuts($featureCollection)
-	{
-		// TODO check for cache
-
-		$this->timezoneNamesToPolygons = [];
-
-		foreach ($featureCollection->features as $feature) {
-			$tzname = $feature->properties->TZID;
-			$region = explode('/', $tzname)[0];
-
-			if (! in_array($region, self::EXCLUDE_REGIONS)) {
-				// We can only process polygons
-				if ($feature->geometry->type === 'Polygon') {
-					$polys = $feature->geometry->coordinates;
-
-					if (count($polys) && ! in_array($tzname, $this->timezoneNamesToPolygons)) {
-						$this->timezoneNamesToPolygons[$tzname] = [];
-					}
-
-					foreach ($polys as $poly_data) {
-						// WPS84 coordinates are [long, lat], while many conventions are [lat, long]
-						// Our data is in WPS84.  Convert to an explicit format which Geotools likes.
-						$poly = new Polygon();
-						foreach ($poly_data as $point) {
-							$poly->add(new Coordinate([$point[1], $point[0]]));
-						}
-						$this->timezoneNamesToPolygons[$tzname][] = $poly_flipped;
-					}
-				}
-			}
-		}
-
-		$this->timezoneLongitudeShortcuts = [];
-		$this->timezoneLatitudeShortcuts = [];
-
-		foreach ($this->timezoneNamesToPolygons as $tzname => $polygons) {
-			foreach ($polygons as $polyindex => $poly) {
-				$bbox = $poly->getBoundingBox();
-				$minLng = floor($bbox->getWest() / self::SHORTCUT_DEGREES_LONGITUDE) * self::SHORTCUT_DEGREES_LONGITUDE;
-				$maxLng = floor($bbox->getEast() / self::SHORTCUT_DEGREES_LONGITUDE) * self::SHORTCUT_DEGREES_LONGITUDE;
-				$minLat = floor($bbox->getSouth() / self::SHORTCUT_DEGREES_LATITUDE) * self::SHORTCUT_DEGREES_LATITUDE;
-				$maxLat = floor($bbox->getNorth() / self::SHORTCUT_DEGREES_LATITUDE) * self::SHORTCUT_DEGREES_LATITUDE;
-
-				for ($degree = $minLng; $degree <= $maxLng; $degree += self::SHORTCUT_DEGREES_LONGITUDE) {
-					if (! in_array($degree, $this->timezoneLongitudeShortcuts)) {
-						$this->timezoneLongitudeShortcuts[$degree] = [];
-					}
-					if (! in_array($tzname, $this->timezoneLongitudeShortcuts[$degree])) {
-						$this->timezoneLongitudeShortcuts[$degree][$tzname] = [];
-					}
-					$this->timezoneLongitudeShortcuts[$degree][$tzname].push($polyIndex);
-				}
-
-				for ($degree = $minLat; $degree <= $maxLat; $degree += self::SHORTCUT_DEGREES_LATITUDE) {
-					if (! in_array($degree, $this->timezoneLatitudeShortcuts)) {
-						$this->timezoneLatitudeShortcuts[$degree] = [];
-					}
-					if (! in_array($tzname, $this->timezoneLatitudeShortcuts[$degree])) {
-						$this->timezoneLatitudeShortcuts[$degree][$tzname] = [];
-					}
-					$this->timezoneLatitudeShortcuts[$degree][$tzname].push($polyIndex);
-				}
-
-				// As we're painstakingly constructing the shortcut table, let's write
-				// it to cache so that future generations will be saved the ten
-				// seconds of agony, and more importantly, the huge memory consumption.
-
-				/* TODO What does this do for us?
-				$polyTranslationsForReduce = [];
-				$reducedShortcutData = [
-					'lat' => [
-						'degree' => SHORTCUT_DEGREES_LATITUDE,
-					],
-					'lng' => [
-						'degree' => SHORTCUT_DEGREES_LONGITUDE,
-					],
-					'polys' => [],
-				];
-				$avgTzPerShortcut = 0;
-
-				for (var lngDeg in timezoneLongitudeShortcuts) {
-					for (var latDeg in timezoneLatitudeShortcuts) {
-						var lngSet = new sets.Set(Object.keys(timezoneLongitudeShortcuts[lngDeg]));
-						var latSet = new sets.Set(Object.keys(timezoneLatitudeShortcuts[latDeg]));
-						var applicableTimezones = lngSet.intersection(latSet).array();
-						if (applicableTimezones.length > 1) {
-							// We need these polys
-							for (var tzindex in applicableTimezones) {
-								var tzname = applicableTimezones[tzindex];
-								var latPolys = timezoneLatitudeShortcuts[latDeg][tzname];
-								var lngPolys = timezoneLongitudeShortcuts[lngDeg][tzname];
-							}
-						}
-						avgTzPerShortcut += applicableTimezones.length;
-					}
-				}
-				avgTzPerShortcut /= (Object.keys(timezoneLongitudeShortcuts).length * Object.keys(timezoneLatitudeShortcuts).length);
-
-				console.log(Date.now() - now + 'ms to construct shortcut table');
-				console.log('Average timezones per ' + SHORTCUT_DEGREES_LATITUDE + '° lat x ' + SHORTCUT_DEGREES_LONGITUDE + '° lng: ' + avgTzPerShortcut);
-				* /
-			}
-		}
-	}
-	*/
 
 	public function tzNameAt($lat, $lng)
 	{
+		$this->loadOrBuildShortcuts();
+
 		$latTzOptions = $this->timezoneLatitudeShortcuts[(string) floor($lat / self::SHORTCUT_DEGREES_LATITUDE) * self::SHORTCUT_DEGREES_LATITUDE];
 		$latSet = array_keys($latTzOptions);
 		$lngTzOptions = $this->timezoneLongitudeShortcuts[(string) floor($lng / self::SHORTCUT_DEGREES_LONGITUDE) * self::SHORTCUT_DEGREES_LONGITUDE];
@@ -210,11 +149,13 @@ class TzWhere
 			case 1:
 				return array_values($possibleTimezones)[0];
 			default:
+				// Now we need to load the full data
 				$toFind = [$lat, $lng];
 				foreach ($possibleTimezones as $tzname) {
+					// TODO: Does this actually work properly?
 					$polyIndices = array_intersect($latTzOptions[$tzname], $lngTzOptions[$tzname]);
 					foreach ($polyIndices as $polyIndex) {
-						$poly = $this->timezoneNamesToPolygons[$tzname][$polyIndex];
+						$poly = $this->getTimezonePolygon($tzname, $polyIndex);
 						$found = $poly->pointInPolygon($toFind);
 						if ($found) {
 							return $tzname;
