@@ -13,6 +13,15 @@ final class TzWhereTest extends TestCase
 	protected static $outsideSwiftCurrentSask = ['lat' => 50.355715, 'lng' => -107.595065];
 	protected static $chicagoLakefront = ['lat' => 41.906637, 'lng' => -87.624839];
 
+	protected static $awayFromBoundaries = [
+		['lat' => 39.119023, 'lng' => -77.022560, 'tz' => 'America/New_York'],
+		['lat' => 37.584784, 'lng' => -81.723150, 'tz' => 'America/New_York'],
+		['lat' => 35.122078, 'lng' => -89.761039, 'tz' => 'America/Chicago'],
+		['lat' => 37.357036, 'lng' => -119.546597, 'tz' => 'America/Los_Angeles'],
+		['lat' => 42.672605, 'lng' => -155.560792, 'tz' => null],
+		// ['lat' => , 'lng' => , 'tz' => 'America/New_York'],
+	];
+
 	/**
      * @outputBuffering disabled
      */
@@ -110,5 +119,19 @@ final class TzWhereTest extends TestCase
 	public function testAccuracySeaside()
 	{
 		$this->assertEquals('America/Chicago', self::$tzWhere->tzNameAt(self::$chicagoLakefront['lat'], self::$chicagoLakefront['lng']));
+	}
+
+	/**
+	 * @group mmk
+	 * @group shortcuts
+	 */
+	public function testShortcutsOnly()
+	{
+		$result = self::$tzWhere->tzNameAt(self::$whiteHouse['lat'], self::$whiteHouse['lng']);
+		$this->assertEquals('America/New_York', $result);
+
+		foreach (static::$awayFromBoundaries as $place) {
+			$this->assertEquals($place['tz'], self::$tzWhere->tzNameAt($place['lat'], $place['lng']));
+		}
 	}
 }
