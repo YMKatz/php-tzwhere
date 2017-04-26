@@ -12,18 +12,25 @@ class TzWhere
 	// could in the worst case require calculations on the order of O(****load),
 	// I take advantage of the fact that my particular dataset clusters very
 	// heavily by degrees longitude.
-	// TODO cache this with file and read from cached file.
 	const SHORTCUT_DEGREES_LATITUDE = 1;
 	const SHORTCUT_DEGREES_LONGITUDE = 1;
+	const POLYGON_FILE_SPLIT_DEPTH = 2;
+	const CACHE_PARTIALS_OFF = 0;
+	const CACHE_PARTIALS_FULLY = 1;
+	const CACHE_PARTIALS_PER_RUN = 2;
+	const CACHE_PARTIALS_PER_RUN_LOTTERY = 3;
+	const CACHE_PARTIALS = self::CACHE_PARTIALS_PER_RUN_LOTTERY;
 	// Maybe you only care about one region of the earth.  Exclude "America" to
 	// discard timezones that start with "America/", such as "America/Los Angeles"
 	// and "America/Chicago", etc.
 	// TODO Make this user-settable
-	const EXCLUDE_REGIONS = [];
+	const EXCLUDE_REGIONS = ['uninhabited'];
 
 
 	private $tzFilename = null;
-	private $timezoneNamesToPolygons = null;
+	private $timezoneNamesToPolygons = [];
+	private $fully_loaded = false;
+	private $partials_loaded = [];
 
 	private $shortcutsFilename;
 	private $timezoneLongitudeShortcuts = null;
@@ -55,21 +62,50 @@ class TzWhere
 		$this->shortcutsFilename = $tzWorldFile . '-shortcuts';
 	}
 
-	public function getTimezonePolygon($tzname, $polyindex)
+	public function getTimezonePolygon($tzname, $polyindex, $point)
 	{
-		$polygons = $this->getOrLoadTimezonePolygons(false);
-
+		$polygons = $this->getSubsetOfPolygonsForPoint($point);
 		return $polygons[$tzname][$polyindex];
+	}
+
+	public function getPolygonFilenames()
+	{
+		return $this->makePolygonFilenames(self::POLYGON_FILE_SPLIT_DEPTH);
+	}
+
+	protected function makePolygonFilenames($depth, $names = [''])
+	{
+		if ($depth === 0) {
+			return array_map(function ($name) {
+				return $this->tzFilename . '-' . (strlen($name) === 0 ? 'all' : $name);
+			}, $names);
+		}
+
+		return $this->makePolygonFilenames($depth - 1, array_reduce($names, function ($names, $name) {
+			// Quadrants are: 0 - NW, 1 - NE, 2 - SE, 3 - SW
+			foreach (['0','1','2','3'] as $quadrant) {
+				$names[] = $name . $quadrant;
+			}
+			return $names;
+		}, []));
 	}
 
 	public function getOrLoadTimezonePolygons($autobuild_shortcuts = true)
 	{
-		if ($this->timezoneNamesToPolygons === null) {
-			$this->timezoneNamesToPolygons = unserialize(file_get_contents($this->tzFilename));
+		if (!$this->fully_loaded) {
+			foreach ($this->getPolygonFilenames() as $file) {
+				if (!isset($this->partials_loaded[$file])) {
+					$zones = unserialize(file_get_contents($file));
+					$this->timezoneNamesToPolygons = array_merge($this->timezoneNamesToPolygons, $zones);
+					$this->partials_loaded[$file] = true;
+				}
+			}
 			// If the raw data is loaded, make sure the shortcuts are loaded too unless it would cause a loop
 			if ($autobuild_shortcuts) {
 				$this->loadOrBuildShortcuts();
 			}
+
+			$this->fully_loaded = true;
 		}
 
 		return $this->timezoneNamesToPolygons;
@@ -133,6 +169,122 @@ class TzWhere
 		return [$this->timezoneLatitudeShortcuts, $this->timezoneLongitudeShortcuts];
 	}
 
+	public function getSubsetOfPolygonsForPoint($point)
+	{
+		$bounds = ['n' => 180, 's' => 0, 'e' => 360, 'w' => 0];
+		$point['lat'] = $point['lat'] + 90;
+		$point['lng'] = $point['lng'] + 180;
+		$file = $this->tzFilename . '-';
+
+		if (self::POLYGON_FILE_SPLIT_DEPTH === 0) {
+			$file .= 'all';
+		} else {
+			for ($i = 0; $i < self::POLYGON_FILE_SPLIT_DEPTH; $i++) {
+				$mid_lat = $bounds['s'] + (($bounds['n'] - $bounds['s']) / 2);
+				$mid_lng = $bounds['w'] + (($bounds['e'] - $bounds['w']) / 2);
+				// Quadrants are: 0 - NW, 1 - NE, 2 - SE, 3 - SW
+				$number = 0;
+
+				if ($point['lat'] < $mid_lat) {
+					$bounds['n'] = $mid_lat;
+					$number = 2; // South = 2 or 3
+				} else {
+					$bounds['s'] = $mid_lat;
+				}
+
+				if ($point['lng'] < $mid_lng) {
+					$bounds['e'] = $mid_lng;
+					// If north stay at 0 for west, if south go to 3 for west
+					$number = ($number === 0 ? 0 : 3);
+				} else {
+					$bounds['w'] = $mid_lng;
+					// If north go to 1 for east, if south go to 2 for east
+					$number = ($number === 0 ? 1 : 2);
+				}
+
+				// Append the quadrant number to the filename
+				$file .= $number;
+			}
+		}
+
+		// If we are already in memory, then skip loading again.
+		if (! $this->fully_loaded && ! isset($this->partials_loaded[$file])) {
+			$zones = unserialize(file_get_contents($file));
+
+			if (self::CACHE_PARTIALS) {
+				$this->timezoneNamesToPolygons = array_merge($this->timezoneNamesToPolygons, $zones);
+				$this->partials_loaded[$file] = true;
+				return $this->timezoneNamesToPolygons;
+			}
+
+			return $zones;
+		}
+
+		return $this->timezoneNamesToPolygons;
+	}
+
+	protected function clearCachedPartialsFromRun()
+	{
+		if (self::CACHE_PARTIALS === self::CACHE_PARTIALS_PER_RUN) {
+			$this->timezoneNamesToPolygons = [];
+			$this->partials_loaded = [];
+		} elseif (self::CACHE_PARTIALS === self::CACHE_PARTIALS_PER_RUN_LOTTERY) {
+			$rand = mt_rand(0, 10);
+			// 20% of the time we clear partials
+			if ($rand < 2) {
+				$this->timezoneNamesToPolygons = [];
+				$this->partials_loaded = [];
+			}
+		}
+	}
+
+	/*
+	protected function constructShortcuts($featureCollection)
+	{
+
+				// As we're painstakingly constructing the shortcut table, let's write
+				// it to cache so that future generations will be saved the ten
+				// seconds of agony, and more importantly, the huge memory consumption.
+
+				/* TODO What does this do for us?
+				$polyTranslationsForReduce = [];
+				$reducedShortcutData = [
+					'lat' => [
+						'degree' => SHORTCUT_DEGREES_LATITUDE,
+					],
+					'lng' => [
+						'degree' => SHORTCUT_DEGREES_LONGITUDE,
+					],
+					'polys' => [],
+				];
+				$avgTzPerShortcut = 0;
+
+				for (var lngDeg in timezoneLongitudeShortcuts) {
+					for (var latDeg in timezoneLatitudeShortcuts) {
+						var lngSet = new sets.Set(Object.keys(timezoneLongitudeShortcuts[lngDeg]));
+						var latSet = new sets.Set(Object.keys(timezoneLatitudeShortcuts[latDeg]));
+						var applicableTimezones = lngSet.intersection(latSet).array();
+						if (applicableTimezones.length > 1) {
+							// We need these polys
+							for (var tzindex in applicableTimezones) {
+								var tzname = applicableTimezones[tzindex];
+								var latPolys = timezoneLatitudeShortcuts[latDeg][tzname];
+								var lngPolys = timezoneLongitudeShortcuts[lngDeg][tzname];
+							}
+						}
+						avgTzPerShortcut += applicableTimezones.length;
+					}
+				}
+				avgTzPerShortcut /= (Object.keys(timezoneLongitudeShortcuts).length * Object.keys(timezoneLatitudeShortcuts).length);
+
+				console.log(Date.now() - now + 'ms to construct shortcut table');
+				console.log('Average timezones per ' + SHORTCUT_DEGREES_LATITUDE + '° lat x ' + SHORTCUT_DEGREES_LONGITUDE + '° lng: ' + avgTzPerShortcut);
+				* /
+			}
+		}
+	}
+	*/
+
 	public function tzNameAt($lat, $lng)
 	{
 		$this->loadOrBuildShortcuts();
@@ -155,14 +307,17 @@ class TzWhere
 					// TODO: Does this actually work properly?
 					$polyIndices = array_intersect($latTzOptions[$tzname], $lngTzOptions[$tzname]);
 					foreach ($polyIndices as $polyIndex) {
-						$poly = $this->getTimezonePolygon($tzname, $polyIndex);
+						$poly = $this->getTimezonePolygon($tzname, $polyIndex, ['lat' => $lat, 'lng' => $lng]);
 						$found = $poly->pointInPolygon($toFind);
 						if ($found) {
+							$this->clearCachedPartialsFromRun();
 							return $tzname;
 						}
 					}
 				}
 		}
+
+		$this->clearCachedPartialsFromRun();
 
 		// Note that we will only get here if there were options based on the shortcut
 		// table but they all were wrong.
